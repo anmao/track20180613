@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+    <meta name="viewport" content="initial-scale=1, maximum-scale=1,user-scalable=no"/>
+    <title>地图</title>
+    <style>
+        * {
+            margin: 0px;
+            padding: 0px;
+        }
+        
+        .toolbar {
+            height: 100px;
+            width: 100%;
+            margin: 0 auto;
+            position: relative;
+        }
+        
+        .toolbar .search {
+            float: top;
+            height: 10%;
+            width: 700px;
+            position: absolute;
+            top: -30px;
+            right: 0;
+            bottom: 0;
+            left: 0;
+            margin: auto;
+        }
+        
+        #search_content {
+            width: 281px;
+            height: 38px;
+            background-color: #FFFFFF;
+            border: 1px solid #e6e6e6;
+            line-height: 1.3;
+            border-radius: 2px;
+            padding-left: 10px;
+        }
+        
+        button {
+            height: 38px;
+            line-height: 38px;
+            padding: 0 18px;
+            color: #fff;
+            background-color: #009688;
+            font-size: 14px;
+            cursor: pointer;
+            border: none;
+            border-radius: 2px;
+            margin-left: 10px;
+        }
+        
+        #search_submit {
+            margin-left: 40px;
+        }
+        
+        #map {
+            float: right;
+            height: 400px;
+            width: 80%;
+            right: 0px;
+        }
+        #container{
+            height: 450px;
+            margin-top: -35px;
+        }
+        .map-bar{
+            height: 400px;
+        }
+        #time_stop{
+            height: 200px; 
+            width: 20%;
+        }
+        #num_gps{
+            height: 200px; 
+            width: 20%;
+        }
+    </style>
+        
+    <script type="text/javascript" src="/static/js/jquery.min.js"></script>
+
+    <link rel="stylesheet" href="/static/js/leaflet.css"/>
+    <script type="text/javascript" src="/static/js/leaflet.js"></script>
+
+    <script type="text/javascript" src="/static/js/proj4.js"></script>
+    <script type="text/javascript" src="/static/js/proj4leaflet.min.js"></script>
+
+    <script type="text/javascript" src="/static/src/tileLayer.baidu.js"></script>
+
+    <script type="text/javascript" src="/static/js/echarts.min.js"></script>
+    <script type="text/javascript" src="/static/js/echarts-gl.min.js"></script>
+    <script type="text/javascript" src="/static/js/ecStat.min.js"></script>
+    <script type="text/javascript" src="/static/js/dataTool.min.js"></script>
+    <script type="text/javascript" src="/static/js/china.js"></script>
+    <script type="text/javascript" src="/static/js/world.js"></script>
+    <script type="text/javascript" src="/static/js/apiZUO.js"></script>
+    <script type="text/javascript" src="/static/js/bmap.min.js"></script>
+    <script type="text/javascript" src="/static/js/simplex.js"></script>
+</head>
+<body>
+<div class="toolbar">
+    <div class="search">
+        <input type="text" id="search_content" placeholder="请输入车辆ID">
+        <button type="button" id="search_submit">搜索</button>
+        <button type="button" id="show_origin_point">原始点</button>
+        <button type="button" id="show_stay_point">停留区域</button>
+    </div>
+</div>
+
+<div id="map" class="map"></div>
+<div class="map-bar">
+    <div id="num_gps"></div>
+    <div id="time_stop"></div>
+</div>
+
+<div class="calendar">
+    <div id="container"></div>
+</div>
+</body>
+<script type="text/javascript">
+
+function getAllPoint(track_data) {
+    var showData = []
+    for (var key in track_data) {
+        track_data[key].map(function (point) {
+            showData.push(point);
+        });
+    }
+    return showData;
+}
+
+function getDayPoint(track_data, day) {
+    var dayData = [];
+    var findFlag = 0;
+    for (var key in track_data) {
+        var keyDay = key.split(',')[1];
+        if (findFlag == 1 && keyDay != day) {
+            break;
+        }
+        if (keyDay == day) {
+            track_data[key].map(function (point) {
+                dayData.push(point);
+            });
+            findFlag = 1;
+        }
+    }
+    return dayData;
+}
+
+function drawTrack(map, L, track_data, key) {
+    line = L.polyline(getDayPoint(track_data, line_day), {color: 'red'});
+    line.addTo(map);
+    return line;
+}
+
+function getTrackDataFromJson(jsonData) {
+    var track_data = new Map();
+    var temp_date = {"year": 0, "month": 0, "day": 0, "hour": 0};
+    var max_count = 0;
+    var temp_str = null;
+
+    // 将搜索结果存入track_data
+    jsonData.map(function (point) {
+        if (point["month"] != temp_date["month"] || point["day"] != temp_date["day"] || Math.floor(point["hour"] / 2) != temp_date["hour"]) {
+            if (Object.getOwnPropertyNames(track_data).length != 0) {
+                if (max_count < track_data[temp_str].length) {max_count = track_data[temp_str].length;}
+            }
+            temp_str = point["month"] + ',' + point["day"] + ',' + Math.floor(point["hour"] / 2);
+            track_data[temp_str] = [];
+            temp_date["year"] = point["year"];
+            temp_date["month"] = point["month"];
+            temp_date["day"] = point["day"];
+            temp_date["hour"] = Math.floor(point["hour"] / 2);
+        }
+        temp_str = point["month"] + ',' + point["day"] + ',' + Math.floor(point["hour"] / 2);
+        track_data[temp_str].push([point["lat"], point["lng"]]);
+    });
+    return [track_data, max_count];
+}
+
+$(document).ready(function () {
+
+    // 初始化地图
+    var mapCenter = [41.752307,86.191595];
+
+    var map = L.map('map', {
+        crs: L.CRS.Baidu,
+        attributionControl: false,
+        center: mapCenter,
+        zoom: 11,
+        minZoom: 9,
+        maxZoom: 18
+    });
+
+    var mapFlag = 0; // 总体轨迹锁
+    var highLightLineFlag = 0;  // 高亮轨迹锁
+    var dayTrackFlag = 0;  // 单日轨迹锁
+    var stayPointFlag = 0; // 停留点锁
+    var originPointFlag = 0; // 原始轨迹点锁
+
+    var mapLine = null;  // 总体轨迹
+    var clickLine = null;  // 高亮轨迹
+    var dayTrack = null;  // 单日轨迹
+    var stayPolygon = []; // 停留点多边形
+    var originPointSet = [];  // 原始轨迹点集合
+
+    // 控制地图底图
+    // new L.tileLayer('http://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map)
+    // new L.tileLayer('http:///Users/rago/dianke/Map/leaflet-tileLayer-baidu-master/tiles/{z}/{x}/{y}.jpg').addTo(map)
+    L.control.layers(
+        {
+            "百度地图": L.tileLayer.baidu({ layer: 'vec' }).addTo(map),
+            "百度卫星": L.tileLayer.baidu({ layer: 'img' }),
+        },
+        {
+            "实时交通信息": L.tileLayer.baidu({ layer: 'time' })
+        },
+        { position: "topright" }).addTo(map);
+
+    // 搜索指定ID轨迹
+    $("#search_submit").click(function(){
+        var originPointButton = 0;
+        var stayPointButton = 0;
+
+        var matchingTrack = new Map();  // 匹配轨迹数据
+        var originTrack = new Map();  // 原始轨迹数据
+        var stayPoints = new Map();
+
+        var nowShowDate = 0;  // 热力图按键锁 存储日期
+
+        // 初始化热力图
+        var myChart = echarts.init(document.getElementById("container"));
+        var app = {};
+        option = null;
+        app.title = '笛卡尔坐标系上的热力图';
+
+        var hours = ['00-01', '02-03', '04-05', '06-07', '08-09', '10-11', '12-13', '14-15', '16-17', '18-19', '20-21', '22-23', 'TOTAL'];
+        var day_31 = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15', '16', '17', '18'
+                , '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31'];
+        var day_30 = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15', '16', '17', '18'
+                , '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30'];
+        var day_28 = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15', '16', '17', '18'
+                , '19', '20', '21', '22', '23', '24', '25', '26', '27', '28'];
+        var day_29 = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15', '16', '17', '18'
+                , '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29'];
+ 
+        if (mapFlag != 0) {
+            mapLine.remove();
+            mapFlag = 0;
+        }
+        if (dayTrackFlag != 0) {
+            dayTrack.remove();
+            dayTrackFlag = 0;
+        }
+        if (highLightLineFlag != 0) {
+            clickLine.remove();
+            highLightLineFlag = 0;
+        }
+        if (stayPointFlag != 0) {
+            stayPolygon.map(function (polygon) {
+                polygon.remove();
+            });
+            stayPolygon = [];
+            stayPointFlag = 0;
+        }
+        if (originPointFlag != 0) {
+            originPointSet.map(function (point) {
+                point.remove();
+            });
+            originPointSet = [];
+            originPointFlag = 0;
+        }
+
+        var search = $("#search_content").val();
+        // 请求原始轨迹点
+        $.get('/origin_json/' + search, function(data_str) {
+            var json_data = JSON.parse(data_str);
+            var track_json_data = getTrackDataFromJson(json_data);
+            originTrack = track_json_data[0];
+            var max_count = track_json_data[1];
+
+            var heatmap_data = [];
+            var temp_count = 0;
+            var temp_day = 0;
+
+            for (var key in originTrack) {
+
+                var key_split = key.split(',');
+                var month = key_split[0];
+                var day = key_split[1];
+                var hour = key_split[2];
+
+                if (temp_day != 0 && temp_day != day) {
+                    heatmap_data[heatmap_data.length - 1]["data"].push([temp_day, 12, temp_count]);
+                    temp_count = 0;
+                }
+
+                if (heatmap_data.length == 0 || month != heatmap_data[heatmap_data.length - 1]["month"]) {
+                    if (heatmap_data.length != 0) {
+                        var max_day = 0;
+                        var n = heatmap_data[heatmap_data.length - 1]["month"];
+                        if (n == 1 || n == 3 || n == 5 || n == 7 || n == 8 || n == 10 || n == 12) {
+                            max_day = 31;
+                        } else if (n == 4 || n == 6 || n == 9 || n == 11) {
+                            max_day =30;
+                        } else if (n == 2) {
+                            max_day = 28;
+                        }
+                        var array_begin = 0;
+                        for (var i = 1; i <= max_day; i++) {
+                            for (var j = 0; j <= 12; j++) {
+                                if (heatmap_data[heatmap_data.length - 1]["data"][array_begin][0] != i || heatmap_data[heatmap_data.length - 1]["data"][array_begin][1] != j) {
+                                    heatmap_data[heatmap_data.length - 1]["data"].splice(array_begin, 0, [i, j, 0]);
+                                    array_begin++;
+                                } else {
+                                    array_begin++;
+                                }
+                            }
+                        }
+                    }
+                    heatmap_data.push({"month": month, "data": []});
+                }
+                temp_day = day;
+                temp_count += originTrack[key].length;
+                heatmap_data[heatmap_data.length - 1]["data"].push([parseInt(day), parseInt(hour), originTrack[key].length]);
+            }
+
+            if (temp_count != 0 ) {
+                heatmap_data[heatmap_data.length - 1]["data"].push([temp_day, 12, temp_count]);
+                temp_count = 0; 
+            }
+            if (heatmap_data.length != 0) {
+                var max_day = 0;
+                var n = heatmap_data[heatmap_data.length - 1]["month"];
+                if (n == 1 || n == 3 || n == 5 || n == 7 || n == 8 || n == 10 || n == 12) {
+                    max_day = 31;
+                } else if (n == 4 || n == 6 || n == 9 || n == 11) {
+                    max_day =30;
+                } else if (n == 2) {
+                    max_day = 28;
+                }
+                var array_begin = 0;
+                for (var i = 1; i <= max_day; i++) {
+                    for (var j = 0; j <= 12; j++) {
+                        if (array_begin >= heatmap_data[heatmap_data.length - 1]["data" ].length) {
+                            heatmap_data[heatmap_data.length - 1]["data" ].push([i, j, 0]);
+                        }
+                        if (heatmap_data[heatmap_data.length - 1]["data" ][array_begin][0] != i || heatmap_data[heatmap_data.length - 1]["data"][array_begin][1] != j) {
+                            heatmap_data[heatmap_data.length - 1]["data"].splice(array_begin, 0, [i, j, 0]);
+                            array_begin++;
+                        } else {
+                            array_begin++;
+                        }
+                    }
+                }
+            }
+
+            switch(heatmap_data[0]["month"]) {
+                case 1, 3, 5, 7, 8, 10, 12:
+                    var days = day_31;
+                break;
+                case 4, 6, 9, 11:
+                    var days = day_30;
+                break;
+                case 2:
+                    var days = day_28;
+                break;
+            };
+
+            option = {
+                tooltip: {
+                    position: 'top',
+                    formatter: function (params, ticket, callback) {
+                        var day = params.data[0];
+                        var firstHour = params.data[1] * 2;
+                        var secondHour = params.data[1] * 2 + 1;
+                        var count = params.data[2];
+                        if (firstHour != 24) {
+                            return day + "日" + firstHour + "时至" + secondHour + "时" + '<br/>' + count + "点";    
+                        } else {
+                            return day + "日全天" + '<br/>' + count + "点";
+                        }
+                    }
+                },
+                animation: false,
+                grid: {
+                    height: '40%',
+                    y: '10%'
+                },
+                xAxis: {
+                    type: 'category',
+                    data: days,
+                    splitArea: {
+                        show: true
+                    }
+                },
+                yAxis: {
+                    type: 'category',
+                    data: hours,
+                    splitArea: {
+                        show: true
+                    }
+                },
+                visualMap: {
+                    min: 0,
+                    max: max_count,
+                    calculable: true,
+                    orient: 'horizontal',
+                    left: 'center',
+                    bottom: '30%'
+                },
+                series: [{
+                    name: 'today',
+                    type: 'heatmap',
+                    data: heatmap_data[0]["data"],
+                    label: {
+                        normal: {
+                            show: true
+                        }
+                    },
+                    itemStyle: {
+                        emphasis: {
+                            shadowBlur: 10,
+                            shadowColor: 'rgba(0, 0, 0, 0.5)'
+                        }
+                    }
+                }]
+            };
+            if (option && typeof option === "object") {
+                myChart.setOption(option, true);
+            }
+
+            var showDay = null;
+            myChart.off('click');
+            myChart.on('click', function (params) {
+
+                if (mapFlag != 0) {
+                    mapLine.remove();
+                    mapFlag = 0;
+                }                
+                if (dayTrackFlag == 1) {
+                    dayTrack.remove();
+                    dayTrackFlag = 0;
+                }
+                if (highLightLineFlag == 1) {
+                    clickLine.remove();
+                    highLightLineFlag = 0;
+                }
+                if (stayPointFlag != 0) {
+                    stayPolygon.map(function (polygon) {
+                        polygon.remove();
+                    });
+                    stayPolygon = [];
+                    stayPointFlag = 0;
+                }
+                if (originPointFlag != 0) {
+                    originPointSet.map(function (point) {
+                        point.remove();
+                    });
+                    originPointSet = [];
+                    originPointFlag = 0;
+                }
+
+                var line_day = params.data[0];
+                var line_hour = params.data[1];
+                var pointCount = params.data[2];
+                if (pointCount != 0) {
+                    nowShowDate = [line_day, line_hour];
+                    if (line_hour == 12) {
+                        showDay = line_day;
+                        dayTrack = L.polyline(getDayPoint(originTrack, line_day), {color: 'red'});
+                        dayTrack.addTo(map);
+                        dayTrackFlag = 1;
+                        if (originPointButton == 1) {
+                            originPointFlag = 1;
+                            for (var key in originTrack) {
+                                var key_day = key.split(',')[1];
+                                if (key_day == line_day) {
+                                    originTrack[key].map(function (point) {
+                                        var drawPoint = L.circle(point, {radius: 10, color: 'blue'}).addTo(map);
+                                        originPointSet.push(drawPoint);
+                                    });
+                                }
+                            } 
+                        }
+                        if (stayPointButton == 1) {
+                            stayPointFlag = 1;
+                            var key_info = 0;
+                            var start_day = 0;
+                            var end_day = 0;
+                            for (var key in stayPoints) {
+                                key_info = key.split(',');
+                                start_day = parseInt(key_info[0]);
+                                end_day = parseInt(key_info[2]);
+                                if (line_day >= start_day && line_day <= end_day) {
+                                    var polygon = L.polygon(stayPoints[key], {color: 'green'}).addTo(map);
+                                    stayPolygon.push(polygon);
+                                }
+                            }
+                        }
+                    } else {
+                        if (showDay != null || showDay != line_day) {
+                            showDay = line_day;
+                            dayTrack = L.polyline(getDayPoint(originTrack, line_day), {color: 'red'});
+                            dayTrack.addTo(map);
+                            dayTrackFlag = 1;
+                        }
+
+                        var key = heatmap_data[0]["month"] + ',' + line_day + ',' + line_hour;
+                        var show_track = originTrack[key];
+                        clickLine = L.polyline(originTrack[key], {color: 'yellow'});
+                        clickLine.addTo(map);
+                        highLightLineFlag = 1;
+
+                        if (originPointButton == 1) {
+                            originPointFlag = 1;
+                            for (var key in originTrack) {
+                                var key_day = key.split(',')[1];
+                                var key_hour = key.split(',')[2];
+                                if (key_day == line_day && key_hour == line_hour) {
+                                    originTrack[key].map(function (point) {
+                                        var drawPoint = L.circle(point, {radius: 10, color: 'blue'}).addTo(map);
+                                        originPointSet.push(drawPoint);
+                                    });    
+                                }
+                            }
+                        }
+                        if (stayPointButton == 1) {
+                            stayPointFlag = 1;
+                            var key_info = 0;
+                            var start_day = 0;
+                            var start_hour = 0;
+                            var end_day = 0;
+                            var end_hour = 0;
+                            for (var key in stayPoints) {
+                                key_info = key.split(',');
+                                start_day = parseInt(key_info[0]);
+                                start_hour = parseInt(key_info[1]);
+                                end_day = parseInt(key_info[2]);
+                                end_hour = parseInt(key_info[3]);
+                                if (start_day <= line_day && start_hour <= line_hour && end_day >= line_day && end_hour >= line_hour) {
+                                    var polygon = L.polygon(stayPoints[key], {color: 'green'}).addTo(map);
+                                    stayPolygon.push(polygon);
+                                }
+                            }
+                        }
+                    }
+                    map.fitBounds(dayTrack.getBounds());
+                } else {
+                    nowShowDate = 0;
+                }                
+            });
+        });
+
+        // 请求停留区域数据
+        $.get('/stay_point_json/' + search, function(clusterPoint) {
+            clusterData = JSON.parse(clusterPoint);
+            clusterPoint = clusterData[0];
+            clusterInfo = clusterData[1];
+            var idx = 0;
+            var key = 0;
+            for (var idx = 0; idx < clusterPoint.length; idx++) {
+                key = clusterInfo[idx][0][0]+ ',' + Math.floor(clusterInfo[idx][0][1] / 2) + ',' + clusterInfo[idx][1][0] + ',' + Math.floor(clusterInfo[idx][1][1] / 2);
+                stayPoints[key] = clusterPoint[idx];
+            }
+
+            var xAxisData = [];
+            var GPSCount = [];
+            var GPSTime = [];
+
+            for (var i = 0; i < clusterInfo.length; i++) {
+                var startHour = clusterInfo[i][0][1];
+                var startMinute = clusterInfo[i][0][2];
+                var endHour = clusterInfo[i][1][1];
+                var endMinute = clusterInfo[i][1][2];
+
+                var tempMinute = endMinute - startMinute;
+                if (tempMinute < 0) {
+                    tempMinute += 60;
+                    endHour -= 1;
+                }
+                tempMinute /= 60;
+                var tempHour = endHour - startHour;
+                if (tempHour < 0) {
+                    tempHour += 24;
+                }
+                var duringTime = Math.floor((tempHour + tempMinute) * 100) / 100;
+
+                xAxisData.push(clusterInfo[i][3]);
+                GPSCount.push(clusterInfo[i][2]);
+                GPSTime.push(duringTime);
+            }
+
+            var dom0 = document.getElementById("num_gps");
+            var myChart0 = echarts.init(dom0);
+            var app0 = {};
+            option0 = null;
+            app0.title = '堆叠柱状图';
+
+            option0 = {
+                tooltip: {
+                    trigger: 'axis',
+                    axisPointer: { // 坐标轴指示器，坐标轴触发有效
+                        type: 'shadow' // 默认为直线，可选为：'line' | 'shadow'
+                    },
+                    formatter: function (params, ticket, callback) {
+                        var clusterId = params[0].dataIndex;
+                        var location = clusterInfo[clusterId][3];
+                        var pointCount = clusterInfo[clusterId][2];
+                        return location + '<br/>' + '停留点GPS个数：' + pointCount;
+                    },
+                    position:function(p){ //其中p为当前鼠标的位置 
+                        return [p[0] + 20, p[1] - 70]; 
+                    }
+                },
+                legend: {
+                    data: ['停留点GPS个数']
+                },
+                grid: {
+                    left: '3%',
+                    right: '4%',
+                    bottom: '3%',
+                    containLabel: true
+                },
+                xAxis: [{
+                    type: 'category',
+                    data: xAxisData
+                }],
+                yAxis: [{
+                    type: 'value'
+                }],
+                series: [{
+                    name: '停留点GPS个数',
+                    type: 'bar',
+                    data: GPSCount
+                }]
+            };;
+            if(option0 && typeof option0 === "object") {
+                myChart0.setOption(option0, true);
+            }
+            
+            var dom1 = document.getElementById("time_stop");
+            var myChart1 = echarts.init(dom1);
+            var app1 = {};
+            option1 = null;
+            app.title = '堆叠柱状图';
+
+            option1 = {
+                tooltip: {
+                    trigger: 'axis',
+                    axisPointer: { // 坐标轴指示器，坐标轴触发有效
+                        type: 'shadow' // 默认为直线，可选为：'line' | 'shadow'
+                    },
+                    formatter: function (params, ticket, callback) {
+                        var clusterId = params[0].dataIndex;
+                        var location = clusterInfo[clusterId][3];
+                        var startDay = clusterInfo[clusterId][0][0];
+                        var startHour = clusterInfo[clusterId][0][1];
+                        var startMinute = clusterInfo[clusterId][0][2];
+                        var endDay = clusterInfo[clusterId][1][0];
+                        var endHour = clusterInfo[clusterId][1][1];
+                        var endMinute = clusterInfo[clusterId][1][2];
+                        var duringTime = params[0].data;
+                        return location + '<br/>' + '停留点起止时间：' + startDay + '日' + startHour + '时' + startMinute + '分至' + endDay + '日' + endHour + '时' + endMinute + '分' + '<br/>' + '停留点的时间跨度：' + duringTime + '小时';
+                    },
+                    position:function(p){ //其中p为当前鼠标的位置 
+                        return [p[0] + 20, p[1] - 70]; 
+                    }
+                },
+                legend: {
+                    data: ['停留点的时间跨度']
+                },
+                grid: {
+                    left: '3%',
+                    right: '4%',
+                    bottom: '3%',
+                    containLabel: true
+                },
+                xAxis: [{
+                    type: 'category',
+                    data: xAxisData
+                }],
+                yAxis: [{
+                    type: 'value'
+                }],
+                series: [{
+                    name: '停留点的时间跨度',
+                    type: 'bar',
+                    data: GPSTime
+                }]
+            };;
+            if(option1 && typeof option1 === "object") {
+                myChart1.setOption(option1, true);
+            }
+        });
+
+        // 请求匹配轨迹搜索结果
+        $.post('/match_json/' + search, null, function(data_str) {
+            var json_data = JSON.parse(data_str);
+            var track_json_data = getTrackDataFromJson(json_data);
+            matchingTrack = track_json_data[0];
+            var max_count = track_json_data[1];
+
+            mapFlag = 1;
+            mapLine = L.polyline(getAllPoint(matchingTrack), {color: 'black'});
+            mapLineDraw = mapLine.addTo(map);
+            map.fitBounds(mapLineDraw.getBounds());
+        });
+
+        $("#show_stay_point").click(function () {
+            var search = $("#search_content").val();
+            stayPointButton = !stayPointButton;
+            if (stayPointFlag != 0) {
+                stayPolygon.map(function (polygon) {
+                    polygon.remove();
+                });
+                stayPolygon = [];
+                stayPointFlag = 0;
+            }
+            if (stayPointButton != 0) {
+                stayPointFlag = 1;
+                if (nowShowDate != 0) {
+                    var nowShowDay = nowShowDate[0];
+                    var nowShowHour = nowShowDate[1];
+                    if (nowShowHour == 12) {
+                        var key_info = 0;
+                        var start_day = 0;
+                        var end_day = 0;
+                        for (var key in stayPoints) {
+                            key_info = key.split(',');
+                            start_day = parseInt(key_info[0]);
+                            end_day = parseInt(key_info[2]);
+                            if (nowShowDay >= start_day && nowShowDay <= end_day) {
+                                var polygon = L.polygon(stayPoints[key], {color: 'green'}).addTo(map);
+                                stayPolygon.push(polygon);
+                            }
+                        }
+                    } else {
+                        var key_info = 0;
+                        var start_day = 0;
+                        var start_hour = 0;
+                        var end_day = 0;
+                        var end_hour = 0;
+                        for (var key in stayPoints) {
+                            key_info = key.split(',');
+                            start_day = parseInt(key_info[0]);
+                            start_hour = parseInt(key_info[1]);
+                            end_day = parseInt(key_info[2]);
+                            end_hour = parseInt(key_info[3]);
+                            if (start_day <= nowShowDay && start_hour <= nowShowHour && end_day >= nowShowDay && end_hour >= nowShowHour) {
+                                var polygon = L.polygon(stayPoints[key], {color: 'green'}).addTo(map);
+                                stayPolygon.push(polygon);
+                            }
+                        }
+                    }
+                } else {
+                    for (var key in stayPoints) {
+                        var polygon = L.polygon(stayPoints[key], {color: 'green'}).addTo(map);
+                        stayPolygon.push(polygon);
+                    }
+                }
+            }
+        });
+
+        $("#show_origin_point").click(function () {
+            originPointButton = !originPointButton;
+            if (originPointFlag != 0) {
+                originPointSet.map(function (point) {
+                    point.remove();
+                });
+                originPointSet = [];
+                originPointFlag = 0;
+            }
+            if (originPointButton != 0) {
+                originPointFlag = 1;
+                if (nowShowDate != 0) {
+                    var nowShowDay = nowShowDate[0];
+                    var nowShowHour = nowShowDate[1];
+                    if (nowShowHour == 12) {
+                        for (var key in originTrack) {
+                            var key_day = key.split(',')[1];
+                            if (key_day == nowShowDay) {
+                                originTrack[key].map(function (point) {
+                                    var drawPoint = L.circle(point, {radius: 10, color: 'blue'}).addTo(map);
+                                    originPointSet.push(drawPoint);
+                                });
+                            }
+                        } 
+                    } else {
+                        for (var key in originTrack) {
+                            var key_day = key.split(',')[1];
+                            var key_hour = key.split(',')[2];
+                            if (key_day == nowShowDay && key_hour == nowShowHour) {
+                                originTrack[key].map(function (point) {
+                                    var drawPoint = L.circle(point, {radius: 10, color: 'blue'}).addTo(map);
+                                    originPointSet.push(drawPoint);
+                                });    
+                            }
+                        }
+                    }    
+                } else {
+                    for (var key in originTrack) {
+                        originTrack[key].map(function (point) {
+                            var drawPoint = L.circle(point, {radius: 10, color: 'blue'}).addTo(map);
+                            originPointSet.push(drawPoint);
+                        });
+                    }
+                }
+            }
+        });
+    });
+});
+</script>
+</html>
